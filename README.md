@@ -37,3 +37,9 @@ In order to run this program, use the virtual environment created above for the 
 ```
 pip install pyqt6
 ```
+
+Then start the program 
+
+```
+python voice_design_gui.py
+```
