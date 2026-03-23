@@ -1,4 +1,3 @@
-import json
 import sys
 from typing import Any, Dict
 
@@ -171,20 +170,6 @@ PARAM_HELP = {
             "  - Higher values -> longer audio, slower generation, more memory use"
         ),
     },
-    "kwargs": {
-        "title": "Additional kwargs",
-        "text": (
-            "Advanced HuggingFace generate() parameters may be supplied as JSON.\n\n"
-            "Examples:\n"
-            "• {\"min_new_tokens\": 50}\n"
-            "• {\"early_stopping\": true}\n"
-            "• {\"length_penalty\": 1.0}\n\n"
-            "Rules:\n"
-            "• Must be valid JSON object syntax\n"
-            "• Keys entered here are merged with the GUI values\n"
-            "• If a key is also set by a GUI control, the GUI control wins"
-        ),
-    },
 }
 
 
@@ -215,7 +200,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Qwen3-TTS Control Panel")
-        self.resize(1100, 760)
+        self.resize(980, 640)
 
         self.widgets: Dict[str, Any] = {}
         self.current_kwargs: Dict[str, Any] = {}
@@ -224,6 +209,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+
+        button_row = QHBoxLayout()
+        self.reset_btn = QPushButton("Reset Defaults")
+        self.reset_btn.clicked.connect(self.reset_defaults)
+        button_row.addWidget(self.reset_btn)
+        button_row.addStretch()
+        main_layout.addLayout(button_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -239,13 +233,6 @@ class MainWindow(QMainWindow):
         top_row.addWidget(self._build_main_talker_group(), 1)
         top_row.addWidget(self._build_subtalker_group(), 1)
         content_layout.addLayout(top_row)
-
-        bottom_row = QHBoxLayout()
-        bottom_row.setSpacing(12)
-        bottom_row.addWidget(self._build_advanced_group(), 1)
-        bottom_row.addWidget(self._build_kwargs_preview_group(), 1)
-        content_layout.addLayout(bottom_row)
-
         content_layout.addStretch()
 
         self.update_enabled_states()
@@ -256,6 +243,7 @@ class MainWindow(QMainWindow):
         layout = QFormLayout(box)
         layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setSpacing(10)
 
         self.widgets["do_sample"] = QCheckBox()
         self.widgets["do_sample"].setChecked(True)
@@ -266,7 +254,6 @@ class MainWindow(QMainWindow):
         self.widgets["top_k"] = QSpinBox()
         self.widgets["top_k"].setRange(1, 500)
         self.widgets["top_k"].setValue(50)
-        self.widgets["top_k"].setToolTip("Top-k sampling. Lower = safer, higher = more diverse.")
         self.widgets["top_k"].valueChanged.connect(self.update_kwargs)
         layout.addRow(self._label_with_help("top_k"), self.widgets["top_k"])
 
@@ -307,6 +294,7 @@ class MainWindow(QMainWindow):
         layout = QFormLayout(box)
         layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setSpacing(10)
 
         note = QLabel("Used for qwen3-tts-tokenizer-v2 style models when applicable.")
         note.setWordWrap(True)
@@ -343,60 +331,6 @@ class MainWindow(QMainWindow):
 
         return box
 
-    def _build_advanced_group(self) -> QGroupBox:
-        box = QGroupBox("Additional kwargs")
-        layout = QVBoxLayout(box)
-
-        top_row = QHBoxLayout()
-        lbl = QLabel("Additional kwargs (JSON object)")
-        help_btn = QPushButton("?")
-        help_btn.setFixedWidth(30)
-        help_btn.clicked.connect(lambda: self.show_help("kwargs"))
-        top_row.addWidget(lbl)
-        top_row.addWidget(help_btn)
-        top_row.addStretch()
-
-        self.widgets["kwargs_text"] = QPlainTextEdit()
-        self.widgets["kwargs_text"].setPlaceholderText(
-            '{\n'
-            '  "min_new_tokens": 50,\n'
-            '  "early_stopping": true\n'
-            '}'
-        )
-        self.widgets["kwargs_text"].setTabChangesFocus(True)
-        self.widgets["kwargs_text"].textChanged.connect(self.update_kwargs)
-
-        self.kwargs_status_label = QLabel("")
-        self.kwargs_status_label.setStyleSheet("color: gray;")
-
-        layout.addLayout(top_row)
-        layout.addWidget(self.widgets["kwargs_text"], 1)
-        layout.addWidget(self.kwargs_status_label)
-
-        return box
-
-    def _build_kwargs_preview_group(self) -> QGroupBox:
-        box = QGroupBox("Current kwargs Preview")
-        layout = QVBoxLayout(box)
-
-        btn_row = QHBoxLayout()
-        self.reset_btn = QPushButton("Reset Defaults")
-        self.reset_btn.clicked.connect(self.reset_defaults)
-
-        self.validate_btn = QPushButton("Validate JSON")
-        self.validate_btn.clicked.connect(self.validate_json_only)
-
-        btn_row.addWidget(self.reset_btn)
-        btn_row.addWidget(self.validate_btn)
-        btn_row.addStretch()
-
-        self.preview = QPlainTextEdit()
-        self.preview.setReadOnly(True)
-
-        layout.addLayout(btn_row)
-        layout.addWidget(self.preview, 1)
-        return box
-
     def _label_with_help(self, key: str) -> QWidget:
         wrapper = QWidget()
         layout = QHBoxLayout(wrapper)
@@ -430,33 +364,8 @@ class MainWindow(QMainWindow):
         for key in ("subtalker_top_k", "subtalker_top_p", "subtalker_temperature"):
             self.widgets[key].setEnabled(subtalker_do)
 
-    def _parse_extra_kwargs(self) -> Dict[str, Any]:
-        text = self.widgets["kwargs_text"].toPlainText().strip()
-        if not text:
-            self.kwargs_status_label.setText("No additional kwargs.")
-            self.kwargs_status_label.setStyleSheet("color: gray;")
-            return {}
-
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            self.kwargs_status_label.setText(f"JSON error: {exc}")
-            self.kwargs_status_label.setStyleSheet("color: red;")
-            return {}
-
-        if not isinstance(parsed, dict):
-            self.kwargs_status_label.setText("Additional kwargs must be a JSON object.")
-            self.kwargs_status_label.setStyleSheet("color: red;")
-            return {}
-
-        self.kwargs_status_label.setText("Additional kwargs JSON is valid.")
-        self.kwargs_status_label.setStyleSheet("color: green;")
-        return parsed
-
     def update_kwargs(self):
-        extra = self._parse_extra_kwargs()
-
-        kwargs = dict(extra)
+        kwargs: Dict[str, Any] = {}
 
         kwargs["do_sample"] = self.widgets["do_sample"].isChecked()
         kwargs["repetition_penalty"] = self.widgets["repetition_penalty"].value()
@@ -475,14 +384,10 @@ class MainWindow(QMainWindow):
             kwargs["subtalker_temperature"] = self.widgets["subtalker_temperature"].value()
 
         self.current_kwargs = kwargs
-        self.preview.setPlainText(json.dumps(self.current_kwargs, indent=2, sort_keys=True))
         self.kwargs_changed.emit(dict(self.current_kwargs))
 
     def get_generation_kwargs(self) -> Dict[str, Any]:
         return dict(self.current_kwargs)
-
-    def validate_json_only(self):
-        _ = self._parse_extra_kwargs()
 
     def reset_defaults(self):
         self.widgets["do_sample"].setChecked(True)
@@ -497,7 +402,6 @@ class MainWindow(QMainWindow):
         self.widgets["subtalker_top_p"].setValue(1.00)
         self.widgets["subtalker_temperature"].setValue(0.90)
 
-        self.widgets["kwargs_text"].setPlainText("")
         self.update_enabled_states()
         self.update_kwargs()
 
