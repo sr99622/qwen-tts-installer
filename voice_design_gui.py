@@ -1,20 +1,27 @@
+import json
 import os
 import sys
 import traceback
 from datetime import datetime
 
-import torch
+import soundfile
 import soundfile as sf
+import torch
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, QUrl
+from PyQt6.QtCore import QObject, QThread, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
-    QFileDialog,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -25,9 +32,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QHeaderView,
 )
-from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from qwen_tts import Qwen3TTSModel
 
@@ -37,6 +42,16 @@ MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 
 def format_seconds(seconds: float) -> str:
     return f"{seconds:.2f}"
+
+
+def safe_write_text_file(path: str, text: str):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def safe_read_text_file(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 class ModelLoadWorker(QObject):
@@ -71,6 +86,46 @@ class ModelLoadWorker(QObject):
             self.error.emit(traceback.format_exc())
 
 
+class BatchSelectionDialog(QDialog):
+    def __init__(self, batch_dirs, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Batch Folder")
+        self.resize(700, 450)
+        self.selected_batch_path = None
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Available batch folders"))
+
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget, 1)
+
+        for batch_dir in batch_dirs:
+            item = QListWidgetItem(os.path.basename(batch_dir))
+            item.setData(256, batch_dir)
+            self.list_widget.addItem(item)
+
+        self.list_widget.itemDoubleClicked.connect(self.accept_selection)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept_selection)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        if self.list_widget.count() > 0:
+            self.list_widget.setCurrentRow(0)
+
+    def accept_selection(self):
+        item = self.list_widget.currentItem()
+        if item is None:
+            QMessageBox.information(self, "No Selection", "Please select a batch folder.")
+            return
+
+        self.selected_batch_path = item.data(256)
+        self.accept()
+
+
 class GenerateWorker(QObject):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
@@ -102,17 +157,22 @@ class GenerateWorker(QObject):
 
             os.makedirs(self.output_dir, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            batch_dir_name = f"batch_{timestamp}"
+            batch_dir = os.path.join(self.output_dir, batch_dir_name)
+            os.makedirs(batch_dir, exist_ok=True)
+
+            safe_write_text_file(os.path.join(batch_dir, "text.txt"), self.text)
+            safe_write_text_file(os.path.join(batch_dir, "instruct.txt"), self.instruct)
 
             results = []
 
             for i, wav in enumerate(wavs, start=1):
                 filename = os.path.join(
-                    self.output_dir,
+                    batch_dir,
                     f"voice_design_{timestamp}_{i:03d}.wav",
                 )
 
                 sf.write(filename, wav, sr)
-
                 duration_sec = len(wav) / float(sr)
 
                 results.append(
@@ -122,6 +182,8 @@ class GenerateWorker(QObject):
                         "filename": os.path.basename(filename),
                         "duration_sec": duration_sec,
                         "sample_rate": sr,
+                        "batch_dir": batch_dir,
+                        "batch_name": batch_dir_name,
                     }
                 )
 
@@ -129,6 +191,21 @@ class GenerateWorker(QObject):
                     f"Saved {os.path.basename(filename)} ({duration_sec:.2f} sec)"
                 )
 
+            manifest = {
+                "batch_name": batch_dir_name,
+                "batch_dir": batch_dir,
+                "created_at": timestamp,
+                "language": self.language,
+                "batch_size": self.batch_size,
+                "text_file": "text.txt",
+                "instruct_file": "instruct.txt",
+                "files": results,
+            }
+
+            with open(os.path.join(batch_dir, "manifest.json"), "w", encoding="utf-8") as f:
+                json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+            self.status.emit(f"Batch saved to {batch_dir}")
             self.finished.emit(results)
 
         except Exception:
@@ -146,6 +223,8 @@ class MainWindow(QMainWindow):
         self.generate_worker = None
 
         self.output_dir = os.path.join(os.getcwd(), "outputs")
+        os.makedirs(self.output_dir, exist_ok=True)
+
         self.results = []
 
         self.player = QMediaPlayer(self)
@@ -167,7 +246,6 @@ class MainWindow(QMainWindow):
 
         main_layout = QVBoxLayout(central)
 
-        # Controls
         controls_group = QGroupBox("Controls")
         controls_layout = QFormLayout()
         controls_group.setLayout(controls_layout)
@@ -182,18 +260,10 @@ class MainWindow(QMainWindow):
         self.output_dir_label = QLabel(self.output_dir)
         self.output_dir_label.setWordWrap(True)
 
-        self.browse_button = QPushButton("Browse...")
-        self.browse_button.clicked.connect(self.choose_output_dir)
-
-        output_layout = QHBoxLayout()
-        output_layout.addWidget(self.output_dir_label, 1)
-        output_layout.addWidget(self.browse_button)
-
         controls_layout.addRow("Language:", self.language_combo)
         controls_layout.addRow("Batch size:", self.batch_spin)
-        controls_layout.addRow("Output directory:", output_layout)
+        controls_layout.addRow("Output directory:", self.output_dir_label)
 
-        # Input group
         input_group = QGroupBox("Voice Design Input")
         input_layout = QVBoxLayout()
         input_group.setLayout(input_layout)
@@ -209,7 +279,6 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(QLabel("Instruct"))
         input_layout.addWidget(self.instruct_edit)
 
-        # Action buttons
         button_layout = QHBoxLayout()
 
         self.run_button = QPushButton("Run")
@@ -223,7 +292,6 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.reload_button)
         button_layout.addStretch()
 
-        # Results group
         results_group = QGroupBox("Generated Files")
         results_layout = QVBoxLayout()
         results_group.setLayout(results_layout)
@@ -252,8 +320,8 @@ class MainWindow(QMainWindow):
         self.stop_button = QPushButton("Stop")
         self.stop_button.clicked.connect(self.stop_playback)
 
-        self.open_folder_button = QPushButton("Open Output Folder")
-        self.open_folder_button.clicked.connect(self.open_output_folder_dialog)
+        self.open_folder_button = QPushButton("Open Batch Folder")
+        self.open_folder_button.clicked.connect(self.open_batch_folder_dialog)
 
         self.clear_list_button = QPushButton("Clear List")
         self.clear_list_button.clicked.connect(self.clear_results)
@@ -271,17 +339,14 @@ class MainWindow(QMainWindow):
         results_layout.addLayout(playback_layout)
         results_layout.addWidget(self.now_playing_label)
 
-        # Log
         log_group = QGroupBox("Log")
         log_layout = QVBoxLayout()
         log_group.setLayout(log_layout)
 
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
-
         log_layout.addWidget(self.log_edit)
 
-        # Assemble
         main_layout.addWidget(controls_group)
         main_layout.addWidget(input_group, 1)
         main_layout.addLayout(button_layout)
@@ -299,18 +364,6 @@ class MainWindow(QMainWindow):
         self.batch_spin.setEnabled(not busy)
         self.text_edit.setEnabled(not busy)
         self.instruct_edit.setEnabled(not busy)
-        self.browse_button.setEnabled(not busy)
-
-    def choose_output_dir(self):
-        directory = QFileDialog.getExistingDirectory(
-            self,
-            "Select Output Directory",
-            self.output_dir,
-        )
-        if directory:
-            self.output_dir = directory
-            self.output_dir_label.setText(directory)
-            self.append_log(f"Output directory set to: {directory}")
 
     def load_model(self):
         self._set_busy(True)
@@ -356,6 +409,106 @@ class MainWindow(QMainWindow):
         self.append_log(error_text)
 
         QMessageBox.critical(self, "Model Load Error", error_text)
+
+    def list_batch_dirs(self):
+        if not os.path.isdir(self.output_dir):
+            return []
+
+        batch_dirs = []
+        for name in os.listdir(self.output_dir):
+            path = os.path.join(self.output_dir, name)
+            if os.path.isdir(path):
+                batch_dirs.append(path)
+
+        batch_dirs.sort(reverse=True)
+        return batch_dirs
+
+    def load_batch_folder(self, batch_dir: str):
+        manifest_path = os.path.join(batch_dir, "manifest.json")
+        text_path = os.path.join(batch_dir, "text.txt")
+        instruct_path = os.path.join(batch_dir, "instruct.txt")
+
+        if not os.path.exists(text_path) or not os.path.exists(instruct_path):
+            raise FileNotFoundError(
+                f"Missing required files in batch folder:\n{batch_dir}\n\nExpected text.txt and instruct.txt"
+            )
+
+        text_value = safe_read_text_file(text_path)
+        instruct_value = safe_read_text_file(instruct_path)
+
+        loaded_results = []
+        manifest = None
+
+        if os.path.exists(manifest_path):
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+
+        if manifest and isinstance(manifest.get("files"), list):
+            for item in manifest["files"]:
+                path = item["path"]
+                if not os.path.isabs(path):
+                    path = os.path.join(batch_dir, os.path.basename(path))
+
+                loaded_results.append(
+                    {
+                        "trial": item.get("trial", len(loaded_results) + 1),
+                        "path": path,
+                        "filename": os.path.basename(path),
+                        "duration_sec": float(item.get("duration_sec", 0.0)),
+                        "sample_rate": int(item.get("sample_rate", 0)),
+                        "batch_dir": batch_dir,
+                        "batch_name": os.path.basename(batch_dir),
+                    }
+                )
+        else:
+            wav_files = [
+                os.path.join(batch_dir, name)
+                for name in sorted(os.listdir(batch_dir))
+                if name.lower().endswith(".wav")
+            ]
+
+            for idx, wav_path in enumerate(wav_files, start=1):
+                info = soundfile.info(wav_path)
+                duration_sec = 0.0
+                if info.samplerate:
+                    duration_sec = info.frames / float(info.samplerate)
+
+                loaded_results.append(
+                    {
+                        "trial": idx,
+                        "path": wav_path,
+                        "filename": os.path.basename(wav_path),
+                        "duration_sec": duration_sec,
+                        "sample_rate": int(info.samplerate),
+                        "batch_dir": batch_dir,
+                        "batch_name": os.path.basename(batch_dir),
+                    }
+                )
+
+        self.stop_playback()
+        self.results.clear()
+        self.results_table.setRowCount(0)
+
+        self.text_edit.setPlainText(text_value)
+        self.instruct_edit.setPlainText(instruct_value)
+
+        if manifest:
+            language = manifest.get("language", "")
+            index = self.language_combo.findText(language)
+            if index >= 0:
+                self.language_combo.setCurrentIndex(index)
+
+            batch_size = int(manifest.get("batch_size", len(loaded_results) or 1))
+            self.batch_spin.setValue(batch_size)
+
+        self.results.extend(loaded_results)
+        for item in loaded_results:
+            self.add_result_row(item)
+
+        if loaded_results:
+            self.results_table.selectRow(0)
+
+        self.append_log(f"Loaded batch folder: {batch_dir}")
 
     def run_generation(self):
         if self.model is None:
@@ -410,8 +563,10 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(list)
     def on_generation_finished(self, new_results):
-        self.results.extend(new_results)
+        self.results.clear()
+        self.results_table.setRowCount(0)
 
+        self.results.extend(new_results)
         for item in new_results:
             self.add_result_row(item)
 
@@ -419,8 +574,7 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
 
         if new_results:
-            first_new_row = self.results_table.rowCount() - len(new_results)
-            self.results_table.selectRow(first_new_row)
+            self.results_table.selectRow(0)
 
     @pyqtSlot(str)
     def on_generation_error(self, error_text):
@@ -455,6 +609,26 @@ class MainWindow(QMainWindow):
 
         return path_item.text()
 
+    def open_batch_folder_dialog(self):
+        batch_dirs = self.list_batch_dirs()
+        if not batch_dirs:
+            QMessageBox.information(
+                self,
+                "No Batch Folders",
+                f"No batch folders were found in:\n\n{self.output_dir}",
+            )
+            return
+
+        dialog = BatchSelectionDialog(batch_dirs, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            self.load_batch_folder(dialog.selected_batch_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Load Batch Error", str(e))
+            self.append_log(traceback.format_exc())
+
     def play_selected_file(self, *_args):
         file_path = self.get_selected_file_path()
         if not file_path:
@@ -484,13 +658,6 @@ class MainWindow(QMainWindow):
         self.results.clear()
         self.results_table.setRowCount(0)
         self.append_log("Results list cleared.")
-
-    def open_output_folder_dialog(self):
-        QMessageBox.information(
-            self,
-            "Output Folder",
-            f"Output folder:\n\n{self.output_dir}",
-        )
 
 
 def main():
