@@ -178,12 +178,8 @@ class MainWindow(QMainWindow):
         playback_layout.addWidget(self.clear_list_button)
         playback_layout.addStretch()
 
-        self.now_playing_label = QLabel("Now playing: none")
-        self.now_playing_label.setWordWrap(True)
-
         results_layout.addWidget(self.results_table)
         results_layout.addLayout(playback_layout)
-        results_layout.addWidget(self.now_playing_label)
 
         main_layout.addWidget(controls_group)
         main_layout.addWidget(input_group, 2)
@@ -538,7 +534,6 @@ class MainWindow(QMainWindow):
                 current_source = self.player.source().toLocalFile()
                 if current_source == old_path:
                     self.player.setSource(QUrl.fromLocalFile(new_path))
-                    self.now_playing_label.setText(f"Now playing: {new_path}")
 
         except Exception as e:
             QMessageBox.critical(
@@ -582,11 +577,9 @@ class MainWindow(QMainWindow):
 
         self.player.setSource(QUrl.fromLocalFile(file_path))
         self.player.play()
-        self.now_playing_label.setText(f"Now playing: {file_path}")
 
     def stop_playback(self):
         self.player.stop()
-        self.now_playing_label.setText("Now playing: none")
 
     def clear_results(self):
         self.stop_playback()
