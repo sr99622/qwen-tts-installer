@@ -1,15 +1,15 @@
 import json
 import os
 import sys
-import traceback
 
 import soundfile
 
-from PyQt6.QtCore import QThread, QUrl, pyqtSlot
+from PyQt6.QtCore import QSettings, QThread, QUrl, pyqtSlot
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -44,6 +44,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.settings = QSettings("QwenTTS", "VoiceDesignTrials")
+
         self.model = None
         self.load_thread = None
         self.load_worker = None
@@ -61,7 +63,10 @@ class MainWindow(QMainWindow):
         self.audio_output.setVolume(1.0)
 
         self.setWindowTitle("Qwen3 TTS Voice Design Trials")
-        self.resize(1000, 850)
+        self.resize(
+            int(self.settings.value("window_width", 1000)),
+            int(self.settings.value("window_height", 850)),
+        )
 
         self._build_ui()
         self._set_busy(True)
@@ -95,29 +100,29 @@ class MainWindow(QMainWindow):
         input_layout = QVBoxLayout()
         input_group.setLayout(input_layout)
 
-        text_label = QLabel("Text")
-        self.text_edit = QPlainTextEdit()
-        self.text_edit.setPlaceholderText("Enter the text to speak here...")
-        self.text_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        instruct_label = QLabel("Instruct")
+        instruct_label = QLabel("Voice Quality Prompt")
         self.instruct_edit = QPlainTextEdit()
-        self.instruct_edit.setPlaceholderText("Enter the voice instruction here...")
+        self.instruct_edit.setPlaceholderText("Enter the voice quality prompt here...")
         self.instruct_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        input_layout.addWidget(text_label)
-        input_layout.addWidget(self.text_edit, 1)
-        input_layout.addWidget(instruct_label)
-        input_layout.addWidget(self.instruct_edit, 0)
-
-        button_layout = QHBoxLayout()
+        text_label = QLabel("Script")
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setPlaceholderText("Enter the script to speak here...")
+        self.text_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.run_button = QPushButton("Run")
         self.run_button.setEnabled(False)
         self.run_button.clicked.connect(self.run_generation)
 
-        button_layout.addWidget(self.run_button)
-        button_layout.addStretch()
+        run_button_layout = QHBoxLayout()
+        run_button_layout.addWidget(self.run_button)
+        run_button_layout.addStretch()
+
+        input_layout.addWidget(instruct_label)
+        input_layout.addWidget(self.instruct_edit, 0)
+        input_layout.addWidget(text_label)
+        input_layout.addWidget(self.text_edit, 1)
+        input_layout.addLayout(run_button_layout)
 
         results_group = QGroupBox("Generated Files")
         results_layout = QVBoxLayout()
@@ -168,7 +173,6 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(controls_group)
         main_layout.addWidget(input_group, 1)
-        main_layout.addLayout(button_layout)
         main_layout.addWidget(results_group, 1)
 
     def _set_busy(self, busy: bool):
@@ -200,10 +204,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot(object, list)
     def on_model_loaded(self, model, languages):
         self.model = model
-
         self.language_combo.clear()
         self.language_combo.addItems(languages)
-
         self._set_busy(False)
 
     @pyqtSlot(str)
@@ -321,11 +323,15 @@ class MainWindow(QMainWindow):
         batch_size = self.batch_spin.value()
 
         if not text:
-            QMessageBox.warning(self, "Missing Text", "Please enter the text to speak.")
+            QMessageBox.warning(self, "Missing Script", "Please enter the script to speak.")
             return
 
         if not instruct:
-            QMessageBox.warning(self, "Missing Instruct", "Please enter the voice instruction.")
+            QMessageBox.warning(
+                self,
+                "Missing Voice Quality Prompt",
+                "Please enter the voice quality prompt.",
+            )
             return
 
         if not language:
@@ -406,7 +412,7 @@ class MainWindow(QMainWindow):
             return
 
         dialog = BatchSelectionDialog(batch_dirs, self)
-        if dialog.exec() != BatchSelectionDialog.DialogCode.Accepted:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
         try:
@@ -441,9 +447,17 @@ class MainWindow(QMainWindow):
         self.results.clear()
         self.results_table.setRowCount(0)
 
+    def closeEvent(self, event):
+        self.settings.setValue("window_width", self.width())
+        self.settings.setValue("window_height", self.height())
+        super().closeEvent(event)
+
 
 def main():
     app = QApplication(sys.argv)
+    app.setOrganizationName("QwenTTS")
+    app.setApplicationName("VoiceDesignTrials")
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
