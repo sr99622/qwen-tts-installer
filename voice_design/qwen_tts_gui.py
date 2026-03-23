@@ -103,18 +103,26 @@ class MainWindow(QMainWindow):
         instruct_label = QLabel("Voice Quality Prompt")
         self.instruct_edit = QPlainTextEdit()
         self.instruct_edit.setPlaceholderText("Enter the voice quality prompt here...")
-        self.instruct_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.instruct_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.instruct_edit.setFixedHeight(110)
 
         text_label = QLabel("Script")
         self.text_edit = QPlainTextEdit()
         self.text_edit.setPlaceholderText("Enter the script to speak here...")
-        self.text_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.text_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
         self.run_button = QPushButton("Run")
         self.run_button.setEnabled(False)
         self.run_button.clicked.connect(self.run_generation)
 
         run_button_layout = QHBoxLayout()
+        run_button_layout.addStretch()
         run_button_layout.addWidget(self.run_button)
         run_button_layout.addStretch()
 
@@ -173,7 +181,7 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(controls_group)
         main_layout.addWidget(input_group, 1)
-        main_layout.addWidget(results_group, 1)
+        main_layout.addWidget(results_group)
 
     def _set_busy(self, busy: bool):
         self.run_button.setEnabled(not busy and self.model is not None)
