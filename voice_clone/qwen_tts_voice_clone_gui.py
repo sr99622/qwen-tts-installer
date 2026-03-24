@@ -91,7 +91,18 @@ class MainWindow(QMainWindow):
         f = QFormLayout(box)
 
         self.language = QComboBox()
-        self.language.addItems(["English", "Chinese", "Russian"])
+        self.language.addItems([
+            "Chinese",
+            "English",
+            "Japanese",
+            "Korean",
+            "German",
+            "French",
+            "Russian",
+            "Portuguese",
+            "Spanish",
+            "Italian",
+        ])
         self.language.setCurrentText("English")
         f.addRow("Language", self.language)
 
@@ -183,6 +194,7 @@ class MainWindow(QMainWindow):
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Trial", "Filename", "Duration (sec)"])
+        self.table.verticalHeader().setVisible(False)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
