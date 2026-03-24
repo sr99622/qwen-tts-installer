@@ -4,7 +4,7 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import QUrl, Qt
+from PyQt6.QtCore import QThread, QUrl, Qt
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
@@ -34,7 +34,14 @@ try:
 except Exception:
     QT_MULTIMEDIA_AVAILABLE = False
 
-from qwen_tts_workers import BatchItem, ModelConfig, QwenTTSBackend
+from qwen_tts_workers import (
+    BatchGenerateWorker,
+    BatchItem,
+    ModelConfig,
+    ModelLoadWorker,
+    PromptBuildWorker,
+    QwenTTSBackend,
+)
 from model_tuning_panel import ModelTuningPanel
 from batch_browser_dialog import BatchBrowserDialog
 
@@ -50,6 +57,8 @@ class MainWindow(QMainWindow):
         self.reference_text = ""
         self.generation_kwargs: Dict = {}
         self.current_batch_dir: Optional[str] = None
+        self.active_threads: List[QThread] = []
+        self.active_workers = []
 
         self.player = None
         self.audio_output = None
@@ -209,6 +218,33 @@ class MainWindow(QMainWindow):
         v.addLayout(row)
         return box
 
+    def set_controls_enabled(self, enabled: bool):
+        self.load_model_btn.setEnabled(enabled)
+        self.build_prompt_btn.setEnabled(enabled)
+        self.run_btn.setEnabled(enabled)
+
+    def _start_worker(self, worker, thread: QThread):
+        self.active_workers.append(worker)
+
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda: self._cleanup_thread(thread))
+        worker.finished.connect(lambda: self._cleanup_worker(worker))
+
+        self.active_threads.append(thread)
+        thread.start()
+
+    def _cleanup_thread(self, thread: QThread):
+        if thread in self.active_threads:
+            self.active_threads.remove(thread)
+
+    def _cleanup_worker(self, worker):
+        if worker in self.active_workers:
+            self.active_workers.remove(worker)
+
     def on_kwargs_changed(self, kwargs: Dict):
         self.generation_kwargs = dict(kwargs)
 
@@ -246,20 +282,61 @@ class MainWindow(QMainWindow):
     def load_model(self):
         try:
             self.model_status_label.setText("loading...")
-            self.backend.load_model(ModelConfig(self.model.text(), self.device.currentText()))
-            self.model_status_label.setText("loaded")
+            self.set_controls_enabled(False)
+
+            config = ModelConfig(
+                self.model.text().strip(),
+                self.device.currentText().strip(),
+            )
+
+            thread = QThread()
+            worker = ModelLoadWorker(self.backend, config)
+            worker.started_work.connect(lambda: print("ModelLoadWorker started"))
+            worker.error.connect(self.on_worker_error)
+            worker.model_loaded.connect(self.on_model_loaded)
+            self._start_worker(worker, thread)
         except Exception as exc:
             self.model_status_label.setText("failed")
+            self.set_controls_enabled(True)
             QMessageBox.critical(self, "Error", str(exc))
+
+    def on_model_loaded(self, model_name: str):
+        _ = model_name
+        self.model_status_label.setText("loaded")
+        self.set_controls_enabled(True)
 
     def build_prompt(self):
         try:
+            if not self.ref_audio.text().strip():
+                QMessageBox.warning(self, "Build Prompt", "Please select a reference audio file.")
+                return
+
+            if not self.reference_text.strip():
+                QMessageBox.warning(self, "Build Prompt", "Please select a reference text file.")
+                return
+
             self.prompt_status_label.setText("building...")
-            self.backend.ensure_prompt(self.ref_audio.text(), self.reference_text)
-            self.prompt_status_label.setText("built")
+            self.set_controls_enabled(False)
+
+            thread = QThread()
+            worker = PromptBuildWorker(
+                self.backend,
+                self.ref_audio.text().strip(),
+                self.reference_text,
+                x_vector_only_mode=False,
+            )
+            worker.started_work.connect(lambda: print("PromptBuildWorker started"))
+            worker.error.connect(self.on_worker_error)
+            worker.prompt_ready.connect(self.on_prompt_ready)
+            self._start_worker(worker, thread)
         except Exception as exc:
             self.prompt_status_label.setText("failed")
+            self.set_controls_enabled(True)
             QMessageBox.critical(self, "Error", str(exc))
+
+    def on_prompt_ready(self):
+        self.prompt_status_label.setText("built")
+        self.set_controls_enabled(True)
 
     def create_unique_batch_dir(self, output_root: str) -> str:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -413,19 +490,49 @@ class MainWindow(QMainWindow):
                     )
                 )
 
-            results = self.backend.generate_voice_clone_batch(
+            self.current_batch_dir = batch_dir
+            self.run_btn.setEnabled(False)
+            self.prompt_status_label.setText("generating...")
+            self.set_controls_enabled(False)
+
+            thread = QThread()
+            worker = BatchGenerateWorker(
+                self.backend,
                 batch_items,
-                self.ref_audio.text(),
+                self.ref_audio.text().strip(),
                 self.reference_text,
                 self.tuning_panel.get_generation_kwargs(),
+                x_vector_only_mode=False,
             )
-
-            self.current_batch_dir = batch_dir
-            self.populate_file_table_from_results(results)
-            self.save_batch_artifacts(batch_dir, script_text, results)
+            worker.started_work.connect(lambda: print("BatchGenerateWorker started"))
+            worker.error.connect(self.on_worker_error)
+            worker.batch_complete.connect(
+                lambda results, d=batch_dir, s=script_text: self.on_batch_complete(d, s, results)
+            )
+            self._start_worker(worker, thread)
 
         except Exception as exc:
+            self.run_btn.setEnabled(True)
+            self.set_controls_enabled(True)
             QMessageBox.critical(self, "Error", str(exc))
+
+    def on_batch_complete(self, batch_dir: str, script_text: str, results: List):
+        self.populate_file_table_from_results(results)
+        self.save_batch_artifacts(batch_dir, script_text, results)
+        self.current_batch_dir = batch_dir
+        self.prompt_status_label.setText("built")
+        self.run_btn.setEnabled(True)
+        self.set_controls_enabled(True)
+
+    def on_worker_error(self, text: str):
+        self.model_status_label.setText(
+            "failed" if "from_pretrained" in text or "Model is not loaded" in text else self.model_status_label.text()
+        )
+        if self.prompt_status_label.text() in ("building...", "generating..."):
+            self.prompt_status_label.setText("failed")
+        self.run_btn.setEnabled(True)
+        self.set_controls_enabled(True)
+        QMessageBox.critical(self, "Error", text)
 
     def get_selected_file_path(self) -> Optional[str]:
         row = self.table.currentRow()

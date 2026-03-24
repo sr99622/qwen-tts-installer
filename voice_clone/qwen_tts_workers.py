@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import soundfile as sf
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 
 @dataclass
@@ -24,7 +25,7 @@ class BatchItem:
 
 class QwenTTSBackend:
     """
-    Persistent backend that owns the model and cached voice clone prompt.
+    Persistent backend that owns the loaded model and cached voice clone prompt.
     Heavy work should be called from worker threads, not the GUI thread.
     """
 
@@ -148,13 +149,10 @@ class QwenTTSBackend:
         return results
 
 
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
-
-
 class ModelLoadWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
-    log = pyqtSignal(str)
+    started_work = pyqtSignal()
     model_loaded = pyqtSignal(str)
 
     def __init__(self, backend: QwenTTSBackend, config: ModelConfig):
@@ -165,10 +163,7 @@ class ModelLoadWorker(QObject):
     @pyqtSlot()
     def run(self):
         try:
-            self.log.emit(f"Loading model: {self.config.model_name}")
-            self.log.emit(f"Device: {self.config.device_map}")
-            self.log.emit(f"Attention: {self.config.attn_implementation}")
-            self.log.emit(f"DType: {self.config.dtype_name}")
+            self.started_work.emit()
             self.backend.load_model(self.config)
             self.model_loaded.emit(self.config.model_name)
         except Exception as exc:
@@ -180,7 +175,7 @@ class ModelLoadWorker(QObject):
 class PromptBuildWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
-    log = pyqtSignal(str)
+    started_work = pyqtSignal()
     prompt_ready = pyqtSignal()
 
     def __init__(
@@ -199,7 +194,7 @@ class PromptBuildWorker(QObject):
     @pyqtSlot()
     def run(self):
         try:
-            self.log.emit("Building voice clone prompt...")
+            self.started_work.emit()
             self.backend.ensure_prompt(
                 ref_audio=self.ref_audio,
                 ref_text=self.ref_text,
@@ -215,7 +210,7 @@ class PromptBuildWorker(QObject):
 class BatchGenerateWorker(QObject):
     finished = pyqtSignal()
     error = pyqtSignal(str)
-    log = pyqtSignal(str)
+    started_work = pyqtSignal()
     batch_complete = pyqtSignal(list)
 
     def __init__(
@@ -238,7 +233,7 @@ class BatchGenerateWorker(QObject):
     @pyqtSlot()
     def run(self):
         try:
-            self.log.emit(f"Generating batch with {len(self.batch_items)} item(s)...")
+            self.started_work.emit()
             results = self.backend.generate_voice_clone_batch(
                 batch_items=self.batch_items,
                 ref_audio=self.ref_audio,
