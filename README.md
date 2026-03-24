@@ -24,6 +24,8 @@ To install without prompting
 python qwen_tts_install.py install --yes
 ```
 
+---
+
 <h3>Voice Design GUI</h3>
 
 <image src="assets/voice_design_gui.png">
@@ -42,4 +44,15 @@ Then start the program
 
 ```
 python voice_design/voice_design_gui.py
+```
+---
+
+<h3>Voice Clone GUI</h3>
+
+<image src="assets/voice_clone_gui.png">
+
+Once you have a reference voice and script, you can use that to create other audio files using the same voice. 
+
+```
+python voice_clone/voice_clone_gui.py
 ```
