@@ -1,3 +1,4 @@
+
 import os
 import sys
 from datetime import datetime
@@ -186,15 +187,16 @@ class ModelTuningPanel(QGroupBox):
     kwargs_changed = pyqtSignal(dict)
 
     def __init__(self, parent=None):
-        super().__init__("Model Tuning Parameters", parent)
+        super().__init__("", parent)
         self.widgets: Dict[str, Any] = {}
         self.current_kwargs: Dict[str, Any] = {}
 
         outer_layout = QVBoxLayout(self)
-        outer_layout.setSpacing(12)
+        outer_layout.setContentsMargins(8, 8, 8, 8)
+        outer_layout.setSpacing(8)
 
         panel_row = QHBoxLayout()
-        panel_row.setSpacing(12)
+        panel_row.setSpacing(10)
         panel_row.addWidget(self._build_main_talker_group(), 1)
         panel_row.addWidget(self._build_subtalker_group(), 1)
 
@@ -219,7 +221,7 @@ class ModelTuningPanel(QGroupBox):
         layout = QFormLayout(box)
         layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         self.widgets["do_sample"] = QCheckBox()
         self.widgets["do_sample"].setChecked(True)
@@ -276,7 +278,7 @@ class ModelTuningPanel(QGroupBox):
         layout = QFormLayout(box)
         layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         note = QLabel("Used for qwen3-tts-tokenizer-v2 style models when applicable.")
         note.setWordWrap(True)
@@ -403,7 +405,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Qwen3 TTS Voice Clone Trials")
-        self.resize(1040, 760)
+        self.resize(1040, 900)
 
         self.backend = QwenTTSBackend()
         self.generation_kwargs: Dict[str, Any] = {}
@@ -418,6 +420,7 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
+        root.setContentsMargins(8, 8, 8, 8)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -426,24 +429,23 @@ class MainWindow(QMainWindow):
         container = QWidget()
         scroll.setWidget(container)
         layout = QVBoxLayout(container)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         self.tuning_panel = ModelTuningPanel()
 
         top_row = QHBoxLayout()
-        top_row.setSpacing(12)
+        top_row.setSpacing(10)
         top_row.addWidget(self._build_controls_group(), 1)
         top_row.addWidget(self.tuning_panel, 1)
 
         layout.addLayout(top_row)
-        layout.addWidget(self._build_reference_group())
         layout.addWidget(self._build_batch_group())
-        layout.addWidget(self._build_run_group())
         layout.addWidget(self._build_results_group())
 
     def _build_controls_group(self) -> QGroupBox:
-        box = QGroupBox("Controls")
+        box = QGroupBox("")
         layout = QFormLayout(box)
+        layout.setSpacing(8)
 
         self.language_combo = QComboBox()
         self.language_combo.addItems(["English", "Chinese", "Russian"])
@@ -465,13 +467,28 @@ class MainWindow(QMainWindow):
         layout.addRow("Model", self.model_name_edit)
 
         self.output_dir_edit = QLineEdit(os.path.expanduser("~/projects/qwen-tts-installer/outputs"))
-        browse = QPushButton("Browse...")
-        browse.clicked.connect(self.browse_output_dir)
-
+        browse_output_btn = QPushButton("Browse...")
+        browse_output_btn.clicked.connect(self.browse_output_dir)
         out_row = QHBoxLayout()
         out_row.addWidget(self.output_dir_edit, 1)
-        out_row.addWidget(browse)
-        layout.addRow("Output directory", out_row)
+        out_row.addWidget(browse_output_btn)
+        layout.addRow("Output Dir", out_row)
+
+        self.ref_audio_edit = QLineEdit()
+        browse_audio_btn = QPushButton("Browse...")
+        browse_audio_btn.clicked.connect(self.browse_ref_audio)
+        audio_row = QHBoxLayout()
+        audio_row.addWidget(self.ref_audio_edit, 1)
+        audio_row.addWidget(browse_audio_btn)
+        layout.addRow("Ref Audio", audio_row)
+
+        self.ref_text_file_edit = QLineEdit()
+        browse_text_btn = QPushButton("Browse...")
+        browse_text_btn.clicked.connect(self.load_ref_text_file)
+        text_row = QHBoxLayout()
+        text_row.addWidget(self.ref_text_file_edit, 1)
+        text_row.addWidget(browse_text_btn)
+        layout.addRow("Ref Text File", text_row)
 
         btn_row = QHBoxLayout()
         self.load_model_btn = QPushButton("Load Model")
@@ -480,73 +497,54 @@ class MainWindow(QMainWindow):
         self.build_prompt_btn = QPushButton("Build Prompt")
         self.build_prompt_btn.clicked.connect(self.build_prompt)
 
+        self.model_status_label = QLabel("not loaded")
+        self.prompt_status_label = QLabel("not built")
+        
         btn_row.addWidget(self.load_model_btn)
+        btn_row.addWidget(self.model_status_label)
         btn_row.addWidget(self.build_prompt_btn)
-        btn_row.addStretch()
+        btn_row.addWidget(self.prompt_status_label)
+        #btn_row.addStretch()
         layout.addRow("", btn_row)
 
-        self.model_status_label = QLabel("Model: not loaded")
-        self.prompt_status_label = QLabel("Prompt: not built")
-        status_row = QVBoxLayout()
-        status_row.addWidget(self.model_status_label)
-        status_row.addWidget(self.prompt_status_label)
-        layout.addRow("", status_row)
-
-        return box
-
-    def _build_reference_group(self) -> QGroupBox:
-        box = QGroupBox("Reference Voice")
-        layout = QFormLayout(box)
-
-        self.ref_audio_edit = QLineEdit()
-        btn_audio = QPushButton("Browse...")
-        btn_audio.clicked.connect(self.browse_ref_audio)
-        row_audio = QHBoxLayout()
-        row_audio.addWidget(self.ref_audio_edit, 1)
-        row_audio.addWidget(btn_audio)
-        layout.addRow("Reference audio", row_audio)
-
-        self.ref_text_file_edit = QLineEdit()
-        btn_text_file = QPushButton("Load Text File...")
-        btn_text_file.clicked.connect(self.load_ref_text_file)
-        row_text_file = QHBoxLayout()
-        row_text_file.addWidget(self.ref_text_file_edit, 1)
-        row_text_file.addWidget(btn_text_file)
-        layout.addRow("Reference text file", row_text_file)
+        #status_row = QVBoxLayout()
+        #status_row.setSpacing(4)
+        #status_row.addWidget(self.model_status_label)
+        #status_row.addWidget(self.prompt_status_label)
+        #layout.addRow("", status_row)
 
         return box
 
     def _build_batch_group(self) -> QGroupBox:
         box = QGroupBox("Voice Clone Batch Input")
         layout = QVBoxLayout(box)
+        layout.setSpacing(8)
 
         self.script_edit = QPlainTextEdit()
         self.script_edit.setPlaceholderText(
             "Enter one script per paragraph.\n\n"
             "Blank lines separate batch items."
         )
-        self.script_edit.setMinimumHeight(180)
-        layout.addWidget(QLabel("Script"))
+        self.script_edit.setMinimumHeight(160)
         layout.addWidget(self.script_edit)
 
-        return box
-
-    def _build_run_group(self) -> QGroupBox:
-        box = QGroupBox("")
-        layout = QHBoxLayout(box)
-        layout.addStretch()
+        button_row = QHBoxLayout()
+        button_row.addStretch()
 
         self.run_btn = QPushButton("Run Batch")
         self.run_btn.setMinimumWidth(140)
         self.run_btn.clicked.connect(self.run_batch)
-        layout.addWidget(self.run_btn)
+        button_row.addWidget(self.run_btn)
 
-        layout.addStretch()
+        button_row.addStretch()
+        layout.addLayout(button_row)
+
         return box
 
     def _build_results_group(self) -> QGroupBox:
         box = QGroupBox("Generated Files")
         layout = QVBoxLayout(box)
+        layout.setSpacing(8)
 
         self.generated_table = QTableWidget(0, 3)
         self.generated_table.setHorizontalHeaderLabels(["Trial", "Filename", "Duration (sec)"])
