@@ -1,9 +1,10 @@
+import json
 import os
 import sys
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List, Optional
 
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QUrl, Qt
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
@@ -26,8 +27,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+try:
+    from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+    QT_MULTIMEDIA_AVAILABLE = True
+except Exception:
+    QT_MULTIMEDIA_AVAILABLE = False
+
 from qwen_tts_workers import BatchItem, ModelConfig, QwenTTSBackend
 from model_tuning_panel import ModelTuningPanel
+from batch_browser_dialog import BatchBrowserDialog
 
 
 class MainWindow(QMainWindow):
@@ -40,6 +49,14 @@ class MainWindow(QMainWindow):
         self.backend = QwenTTSBackend()
         self.reference_text = ""
         self.generation_kwargs: Dict = {}
+        self.current_batch_dir: Optional[str] = None
+
+        self.player = None
+        self.audio_output = None
+        if QT_MULTIMEDIA_AVAILABLE:
+            self.player = QMediaPlayer(self)
+            self.audio_output = QAudioOutput(self)
+            self.player.setAudioOutput(self.audio_output)
 
         self._build_ui()
 
@@ -165,18 +182,28 @@ class MainWindow(QMainWindow):
 
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.itemDoubleClicked.connect(self.on_file_double_clicked)
 
         v.addWidget(self.table)
 
         row = QHBoxLayout()
-        btn = QPushButton("Open Batch Folder")
-        btn.clicked.connect(self.open_folder)
 
-        clr = QPushButton("Clear List")
-        clr.clicked.connect(lambda: self.table.setRowCount(0))
+        self.open_batch_btn = QPushButton("Open Batch Folder")
+        self.open_batch_btn.clicked.connect(self.open_batch_folder_dialog)
 
-        row.addWidget(btn)
-        row.addWidget(clr)
+        self.play_btn = QPushButton("Play Selected")
+        self.play_btn.clicked.connect(self.play_selected_file)
+
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.clicked.connect(self.stop_playback)
+
+        self.clear_btn = QPushButton("Clear List")
+        self.clear_btn.clicked.connect(lambda: self.table.setRowCount(0))
+
+        row.addWidget(self.open_batch_btn)
+        row.addWidget(self.play_btn)
+        row.addWidget(self.stop_btn)
+        row.addWidget(self.clear_btn)
         row.addStretch()
 
         v.addLayout(row)
@@ -234,6 +261,123 @@ class MainWindow(QMainWindow):
             self.prompt_status_label.setText("failed")
             QMessageBox.critical(self, "Error", str(exc))
 
+    def create_unique_batch_dir(self, output_root: str) -> str:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = os.path.join(output_root, stamp)
+        candidate = base
+        suffix = 1
+        while os.path.exists(candidate):
+            candidate = f"{base}_{suffix:02d}"
+            suffix += 1
+        os.makedirs(candidate, exist_ok=True)
+        return candidate
+
+    def save_batch_artifacts(
+        self,
+        batch_dir: str,
+        script_text: str,
+        results: List,
+    ):
+        script_path = os.path.join(batch_dir, "script.txt")
+        ref_text_path = os.path.join(batch_dir, "reference_text.txt")
+        tuning_path = os.path.join(batch_dir, "model_tuning_params.json")
+        metadata_path = os.path.join(batch_dir, "batch_metadata.json")
+
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write(script_text)
+
+        with open(ref_text_path, "w", encoding="utf-8") as f:
+            f.write(self.reference_text)
+
+        tuning = self.tuning_panel.get_generation_kwargs()
+        with open(tuning_path, "w", encoding="utf-8") as f:
+            json.dump(tuning, f, indent=2)
+
+        metadata = {
+            "model_name": self.model.text().strip(),
+            "device": self.device.currentText().strip(),
+            "language": self.language.currentText().strip(),
+            "batch_size": self.batch.value(),
+            "reference_audio": self.ref_audio.text().strip(),
+            "reference_text_file": self.ref_text.text().strip(),
+            "script_file": "script.txt",
+            "reference_text_saved_file": "reference_text.txt",
+            "tuning_file": "model_tuning_params.json",
+            "files": [
+                {
+                    "trial": trial,
+                    "filename": os.path.basename(path),
+                    "duration_sec": dur,
+                }
+                for trial, path, dur in results
+            ],
+        }
+
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
+    def populate_file_table_from_results(self, results: List):
+        self.table.setRowCount(0)
+        for trial, fname, dur in results:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            filename_item = QTableWidgetItem(os.path.basename(fname))
+            filename_item.setData(Qt.ItemDataRole.UserRole, fname)
+
+            self.table.setItem(row, 0, QTableWidgetItem(str(trial)))
+            self.table.setItem(row, 1, filename_item)
+            self.table.setItem(row, 2, QTableWidgetItem(f"{dur:.2f}"))
+
+    def populate_file_table_from_batch_dir(self, batch_dir: str, metadata: Dict):
+        self.table.setRowCount(0)
+        for file_info in metadata.get("files", []):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            full_path = os.path.join(batch_dir, file_info["filename"])
+            filename_item = QTableWidgetItem(file_info["filename"])
+            filename_item.setData(Qt.ItemDataRole.UserRole, full_path)
+
+            self.table.setItem(row, 0, QTableWidgetItem(str(file_info.get("trial", row + 1))))
+            self.table.setItem(row, 1, filename_item)
+            self.table.setItem(row, 2, QTableWidgetItem(f"{float(file_info.get('duration_sec', 0.0)):.2f}"))
+
+    def load_batch_folder(self, batch_dir: str):
+        metadata_path = os.path.join(batch_dir, "batch_metadata.json")
+        script_path = os.path.join(batch_dir, "script.txt")
+        tuning_path = os.path.join(batch_dir, "model_tuning_params.json")
+        ref_text_saved_path = os.path.join(batch_dir, "reference_text.txt")
+
+        if not os.path.isfile(metadata_path):
+            raise FileNotFoundError(f"Missing metadata file: {metadata_path}")
+
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            metadata = json.load(f)
+
+        if os.path.isfile(script_path):
+            with open(script_path, "r", encoding="utf-8") as f:
+                self.script.setPlainText(f.read())
+
+        if os.path.isfile(ref_text_saved_path):
+            with open(ref_text_saved_path, "r", encoding="utf-8") as f:
+                self.reference_text = f.read()
+
+        if os.path.isfile(tuning_path):
+            with open(tuning_path, "r", encoding="utf-8") as f:
+                tuning = json.load(f)
+            self.tuning_panel.set_generation_kwargs(tuning)
+
+        self.model.setText(metadata.get("model_name", self.model.text()))
+        self.device.setCurrentText(metadata.get("device", self.device.currentText()))
+        self.language.setCurrentText(metadata.get("language", self.language.currentText()))
+        self.batch.setValue(int(metadata.get("batch_size", self.batch.value())))
+        self.ref_audio.setText(metadata.get("reference_audio", self.ref_audio.text()))
+        self.ref_text.setText(metadata.get("reference_text_file", self.ref_text.text()))
+        self.current_batch_dir = batch_dir
+
+        self.populate_file_table_from_batch_dir(batch_dir, metadata)
+
     def run_batch(self):
         try:
             script_text = self.script.toPlainText().strip()
@@ -241,8 +385,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Run Batch", "No script was provided.")
                 return
 
-            out = self.out.text().strip()
-            if not out:
+            output_root = self.out.text().strip()
+            if not output_root:
                 QMessageBox.warning(self, "Run Batch", "Please select an output directory.")
                 return
 
@@ -254,13 +398,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Run Batch", "Please select a reference text file.")
                 return
 
-            os.makedirs(out, exist_ok=True)
+            os.makedirs(output_root, exist_ok=True)
+            batch_dir = self.create_unique_batch_dir(output_root)
 
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             batch_items = []
-
             for i in range(1, self.batch.value() + 1):
-                path = os.path.join(out, f"voice_clone_{stamp}_{i:03d}.wav")
+                path = os.path.join(batch_dir, f"voice_clone_{i:03d}.wav")
                 batch_items.append(
                     BatchItem(
                         i,
@@ -277,20 +420,55 @@ class MainWindow(QMainWindow):
                 self.tuning_panel.get_generation_kwargs(),
             )
 
-            for trial, fname, dur in results:
-                r = self.table.rowCount()
-                self.table.insertRow(r)
-                self.table.setItem(r, 0, QTableWidgetItem(str(trial)))
-                self.table.setItem(r, 1, QTableWidgetItem(os.path.basename(fname)))
-                self.table.setItem(r, 2, QTableWidgetItem(f"{dur:.2f}"))
+            self.current_batch_dir = batch_dir
+            self.populate_file_table_from_results(results)
+            self.save_batch_artifacts(batch_dir, script_text, results)
 
         except Exception as exc:
             QMessageBox.critical(self, "Error", str(exc))
 
-    def open_folder(self):
-        path = self.out.text().strip()
-        if path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+    def get_selected_file_path(self) -> Optional[str]:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 1)
+        if item is None:
+            return None
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def play_selected_file(self):
+        if not QT_MULTIMEDIA_AVAILABLE:
+            QMessageBox.warning(self, "Playback", "PyQt6 multimedia is not available.")
+            return
+
+        path = self.get_selected_file_path()
+        if not path or not os.path.isfile(path):
+            QMessageBox.warning(self, "Playback", "No valid audio file is selected.")
+            return
+
+        self.player.setSource(QUrl.fromLocalFile(path))
+        self.player.play()
+
+    def stop_playback(self):
+        if self.player is not None:
+            self.player.stop()
+
+    def on_file_double_clicked(self, item: QTableWidgetItem):
+        _ = item
+        self.play_selected_file()
+
+    def open_batch_folder_dialog(self):
+        output_root = self.out.text().strip()
+        if not output_root or not os.path.isdir(output_root):
+            QMessageBox.warning(self, "Open Batch Folder", "Output directory does not exist.")
+            return
+
+        dlg = BatchBrowserDialog(output_root, self)
+        if dlg.exec() and dlg.selected_batch_dir:
+            try:
+                self.load_batch_folder(dlg.selected_batch_dir)
+            except Exception as exc:
+                QMessageBox.critical(self, "Error", str(exc))
 
 
 def main():

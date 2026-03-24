@@ -349,18 +349,21 @@ class ModelTuningPanel(QGroupBox):
     def get_generation_kwargs(self):
         return dict(self.current_kwargs)
 
-    def reset_defaults(self):
-        self.widgets["do_sample"].setChecked(True)
-        self.widgets["top_k"].setValue(50)
-        self.widgets["top_p"].setValue(1.00)
-        self.widgets["temperature"].setValue(0.90)
-        self.widgets["repetition_penalty"].setValue(1.05)
-        self.widgets["max_new_tokens"].setValue(2048)
+    def set_generation_kwargs(self, kwargs: Dict[str, Any]):
+        self.widgets["do_sample"].setChecked(bool(kwargs.get("do_sample", True)))
+        self.widgets["top_k"].setValue(int(kwargs.get("top_k", 50)))
+        self.widgets["top_p"].setValue(float(kwargs.get("top_p", 1.00)))
+        self.widgets["temperature"].setValue(float(kwargs.get("temperature", 0.90)))
+        self.widgets["repetition_penalty"].setValue(float(kwargs.get("repetition_penalty", 1.05)))
+        self.widgets["max_new_tokens"].setValue(int(kwargs.get("max_new_tokens", 2048)))
 
-        self.widgets["subtalker_dosample"].setChecked(True)
-        self.widgets["subtalker_top_k"].setValue(50)
-        self.widgets["subtalker_top_p"].setValue(1.00)
-        self.widgets["subtalker_temperature"].setValue(0.90)
+        self.widgets["subtalker_dosample"].setChecked(bool(kwargs.get("subtalker_dosample", True)))
+        self.widgets["subtalker_top_k"].setValue(int(kwargs.get("subtalker_top_k", 50)))
+        self.widgets["subtalker_top_p"].setValue(float(kwargs.get("subtalker_top_p", 1.00)))
+        self.widgets["subtalker_temperature"].setValue(float(kwargs.get("subtalker_temperature", 0.90)))
 
         self.update_enabled_states()
         self.update_kwargs()
+
+    def reset_defaults(self):
+        self.set_generation_kwargs({})
