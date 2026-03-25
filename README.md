@@ -39,7 +39,7 @@ python qwen_tts_install.py install
 
 To install without prompting
 ```
-python qwen_tts_install.py install --yes
+python qwen-tts-install.py install --yes
 ```
 
 </details>
